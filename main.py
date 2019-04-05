@@ -7,7 +7,7 @@ fhdsakjfhkaj
 6
 7
 irakli
-8
+8 დავარედაქტირე
 davamate
 9
 

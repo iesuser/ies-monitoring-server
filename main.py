@@ -1,1 +1,1 @@
-#daaredaqtira iraklim
+#redaqtoreba buzaladze

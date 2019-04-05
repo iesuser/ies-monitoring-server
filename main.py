@@ -1,5 +1,5 @@
 #redaqtoreba buzaladze
-2
+2 რედაქტირებულია ერეკლე-ს მიერ
 3
 fhdsakjfhkaj
 4

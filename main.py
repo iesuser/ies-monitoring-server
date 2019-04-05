@@ -8,7 +8,6 @@ fhdsakjfhkaj
 7
 irakli
 8 დავარედაქტირე
->>>>>>> 5ef3a6072f577d76f7eb729addb7cf2eb1a7fb01
 davamate
 9
 

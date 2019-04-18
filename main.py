@@ -8,6 +8,7 @@ import json
 host = "10.0.0.16"
 port = 12345                # Reserve a port for your service.
 s = socket.socket()         # Create a socket object
+buffer_size = 8192
 
 # from PyQt5 import QtCore, QtGui, QtWidgets, uic
 # class MainWindow(QtWidgets.QMainWindow):
@@ -26,34 +27,32 @@ s = socket.socket()         # Create a socket object
 
 # ფუნქცია ხსნის პორტს და იწყებს მოსმენას
 def start_listening():
-    print('Start listening...')
-    s.bind((host, port))        # Bind to the port
-    s.listen(5)                 # Now wait for client connection.
+    s.bind((host, port))
+    s.listen(5)
 
-# ფუნქცია ელოდება client-ებს და ამყარებს კავშირს
+# ფუნქცია ელოდება client-ებს და ამყარებს კავშირს.
 # კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას
 async def accept_connections():
-    print('Ready to accept connections')
+    print('Ready to accept connections...')
     while True:
        connection, addr = s.accept()     # Establish connection with client.
        connection_hendler(connection, addr)
 
 # json ტექსტს აკონვერტირებს dictionary ტიპში
-def json_to_dictionary(json_text):
+def bytes_to_dictionary(json_text):
     return json.loads(json_text.decode("utf-8"))
 
 # client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს
 # მის შეტყობინებას
 def connection_hendler(connection, addr):
     print ('Got connection from', addr)
-    json_message = connection.recv(4096)
+    json_message = connection.recv(buffer_size)
 
-    message = json_to_dictionary(json_message)
+    message = bytes_to_dictionary(json_message)
 
-    print(message["message_type"])
-    print(message["text"])
-
-    connection.send(b'Thank you for connecting')
+    print(message)
+    # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
+    connection.send(bytes(message["message_id"],"utf-8"))
     connection.close()
 
 # ფუნქცია რომელიც ეშვება პირველი პროგრამის ჩართვის დროს

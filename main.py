@@ -2,13 +2,16 @@
 # -*- coding: utf-8 -*-
 import sys
 import socket
-import asyncio
+import threading
 import json
+import keyboard
+import termios, tty, os, time
 
 host = "10.0.0.16"
 port = 12345                # Reserve a port for your service.
 s = socket.socket()         # Create a socket object
 buffer_size = 8192
+exit_flag = False
 
 # from PyQt5 import QtCore, QtGui, QtWidgets, uic
 # class MainWindow(QtWidgets.QMainWindow):
@@ -27,16 +30,24 @@ buffer_size = 8192
 
 # ფუნქცია ხსნის პორტს და იწყებს მოსმენას
 def start_listening():
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
     s.listen(5)
 
 # ფუნქცია ელოდება client-ებს და ამყარებს კავშირს.
 # კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას
-async def accept_connections():
-    print('Ready to accept connections...')
+def accept_connections():
+    # global exit_flag
+    # print(threading.enumerate())
+    print('Ready for accept connections...')
     while True:
-       connection, addr = s.accept()     # Establish connection with client.
-       connection_hendler(connection, addr)
+        try:
+            connection, addr = s.accept()
+            threading.Thread(target = client_hendler_thread, args = (connection, addr)).start()
+        except Exception as err:
+            pass
+        if exit_flag:
+            break
 
 # json ტექსტს აკონვერტირებს dictionary ტიპში
 def bytes_to_dictionary(json_text):
@@ -44,7 +55,7 @@ def bytes_to_dictionary(json_text):
 
 # client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს
 # მის შეტყობინებას
-def connection_hendler(connection, addr):
+def client_hendler_thread(connection, addr):
     print ('Got connection from', addr)
     json_message = connection.recv(buffer_size)
 
@@ -54,18 +65,35 @@ def connection_hendler(connection, addr):
     # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
     connection.send(bytes(message["message_id"],"utf-8"))
     connection.close()
+    print("\nClosed client connection", addr)
+
+
+def getch():
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+ 
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
+def monitor_keyboard():
+    global exit_flag
+    while True:
+        if getch() == "q":
+            print("Closing...")
+            s.shutdown(socket.SHUT_RDWR)
+            s.close()
+            exit_flag = True
+            break
 
 # ფუნქცია რომელიც ეშვება პირველი პროგრამის ჩართვის დროს
-async def main():
-    start_listening()       
-    accept_connections_task = loop.create_task(accept_connections())
-    await asyncio.wait([accept_connections_task])
+def main():
+    start_listening()
+    threading.Thread(target = accept_connections).start()
+    monitor_keyboard()
 
 if __name__ == "__main__":
-    try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
-    except Exception as e:
-        pass
-    finally:
-        loop.close()
+    main()

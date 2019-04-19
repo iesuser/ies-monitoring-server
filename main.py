@@ -4,8 +4,10 @@ import sys
 import socket
 import threading
 import json
-import keyboard
+# import keyboard
 import termios, tty, os, time
+from pprint import pprint
+# import readchar
 
 host = "10.0.0.16"
 port = 12345                # Reserve a port for your service.
@@ -56,33 +58,23 @@ def bytes_to_dictionary(json_text):
 # client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს
 # მის შეტყობინებას
 def client_hendler_thread(connection, addr):
-    print ('Got connection from', addr)
+    print ('|Got connection from', addr, "|")
     json_message = connection.recv(buffer_size)
 
     message = bytes_to_dictionary(json_message)
 
-    print(message)
+    # pprint(message["text"])
     # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
-    connection.send(bytes(message["message_id"],"utf-8"))
+    if message["message_type"] != "blockkk":
+        connection.send(bytes(message["message_id"],"utf-8"))
+        print("|sending : " + message["message_id"] + "|")
     connection.close()
-    print("\nClosed client connection", addr)
-
-
-def getch():
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(sys.stdin.fileno())
-        ch = sys.stdin.read(1)
- 
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+    print("|Closed client connection", addr, "|")
 
 def monitor_keyboard():
     global exit_flag
     while True:
-        if getch() == "q":
+        if input("") == "exit":
             print("Closing...")
             s.shutdown(socket.SHUT_RDWR)
             s.close()

@@ -36,8 +36,6 @@ def start_listening():
 # ფუნქცია ელოდება client-ებს და ამყარებს კავშირს.
 # კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას
 def accept_connections():
-    # global exit_flag
-    # print(threading.enumerate())
     print('Ready for accept connections...')
     while True:
         try:
@@ -50,40 +48,34 @@ def accept_connections():
 
 # json ტექსტს აკონვერტირებს dictionary ტიპში
 def bytes_to_dictionary(json_text):
-    teqsti = json_text.decode("utf-8")
-    print(type(teqsti))
-    print("|" + teqsti + "|")
-    dictionary = json.loads(teqsti)
-    return dictionary
+    return json.loads(json_text.decode("utf-8"))
 
     # return json.loads(json_text.decode("utf-8"))
 
 # client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს
 # მის შეტყობინებას
 def client_handler_thread(connection, addr):
-    print ('|Got connection from', addr, "|")
+    print ('Got connection from', addr)
     while True:
         time.sleep(0.5)
         json_message = connection.recv(buffer_size)
         if not json_message.decode("utf-8"):
-            print("Message not receved")
             continue
         else:
             message = bytes_to_dictionary(json_message)
             # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
             if message["message_type"] != "blockkk":
                 connection.send(bytes(message["message_id"],"utf-8"))
-                print("|sending : " + message["message_id"] + "|")
+                print("sending : " + message["message_id"])
             connection.close()
-            print("|Closed client connection", addr, "|")
+            print("Closed client connection", addr)
             break
-
-   
 
 def command_listener():
     global exit_flag
     while True:
-        if input("") == "exit":
+        command = input("")
+        if command == "exit":
             print("Bye...")
             s.shutdown(socket.SHUT_RDWR)
             s.close()

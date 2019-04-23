@@ -4,10 +4,7 @@ import sys
 import socket
 import threading
 import json
-# import keyboard
-import termios, tty, os, time
-from pprint import pprint
-# import readchar
+import time
 
 host = "10.0.0.16"
 port = 12345                # Reserve a port for your service.
@@ -45,7 +42,7 @@ def accept_connections():
     while True:
         try:
             connection, addr = s.accept()
-            threading.Thread(target = client_hendler_thread, args = (connection, addr)).start()
+            threading.Thread(target = client_handler_thread, args = (connection, addr)).start()
         except Exception as err:
             pass
         if exit_flag:
@@ -53,29 +50,41 @@ def accept_connections():
 
 # json ტექსტს აკონვერტირებს dictionary ტიპში
 def bytes_to_dictionary(json_text):
-    return json.loads(json_text.decode("utf-8"))
+    teqsti = json_text.decode("utf-8")
+    print(type(teqsti))
+    print("|" + teqsti + "|")
+    dictionary = json.loads(teqsti)
+    return dictionary
+
+    # return json.loads(json_text.decode("utf-8"))
 
 # client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს
 # მის შეტყობინებას
-def client_hendler_thread(connection, addr):
+def client_handler_thread(connection, addr):
     print ('|Got connection from', addr, "|")
-    json_message = connection.recv(buffer_size)
+    while True:
+        time.sleep(0.5)
+        json_message = connection.recv(buffer_size)
+        if not json_message.decode("utf-8"):
+            print("Message not receved")
+            continue
+        else:
+            message = bytes_to_dictionary(json_message)
+            # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
+            if message["message_type"] != "blockkk":
+                connection.send(bytes(message["message_id"],"utf-8"))
+                print("|sending : " + message["message_id"] + "|")
+            connection.close()
+            print("|Closed client connection", addr, "|")
+            break
 
-    message = bytes_to_dictionary(json_message)
+   
 
-    # pprint(message["text"])
-    # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
-    if message["message_type"] != "blockkk":
-        connection.send(bytes(message["message_id"],"utf-8"))
-        print("|sending : " + message["message_id"] + "|")
-    connection.close()
-    print("|Closed client connection", addr, "|")
-
-def monitor_keyboard():
+def command_listener():
     global exit_flag
     while True:
         if input("") == "exit":
-            print("Closing...")
+            print("Bye...")
             s.shutdown(socket.SHUT_RDWR)
             s.close()
             exit_flag = True
@@ -85,7 +94,7 @@ def monitor_keyboard():
 def main():
     start_listening()
     threading.Thread(target = accept_connections).start()
-    monitor_keyboard()
+    command_listener()
 
 if __name__ == "__main__":
     main()

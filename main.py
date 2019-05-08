@@ -7,6 +7,8 @@ import json
 import time
 import pymysql
 import os
+import logging
+
 
 # სერვერის ip მისამართი
 server_ip = "10.0.0.16"
@@ -37,6 +39,24 @@ mysql_server_user = os.environ.get('mysql_server_user')
 # mysql სერვერის მომხმარებლის პაროლი (მოთავსებულია .bashrc ფაილში)
 mysql_user_pass = os.environ.get('mysql_user_pass')
 
+# logger შექმნა
+logger = logging.getLogger('ies_monitoring_server_logger')
+logger.setLevel(logging.DEBUG)
+
+# შევქმნათ console handler - ი და განვსაზღვროთ დონე
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+logger.addHandler(console_handler)
+console_handler_formatter = logging.Formatter('%(levelname)s - %(message)s')
+console_handler.setFormatter(console_handler_formatter)
+
+# FileHandler - ის შექმნა. დონის და ფორმატის განსაზღვრა 
+log_file_handler = logging.FileHandler('LOG')
+log_file_handler.setLevel(logging.DEBUG)
+log_file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_file_handler.setFormatter(log_file_formatter)
+logger.addHandler(log_file_handler)
+
 
 def connection_close(connection):
     """ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს"""
@@ -62,7 +82,7 @@ def accept_connections():
     """ ფუნქცია ელოდება client-ებს და ამყარებს კავშირს. 
     კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას """
 
-    print('Ready for accept connections...')
+    logger.debug('Ready for accept connections...')
 
     while True:
         try:
@@ -86,12 +106,20 @@ def bytes_to_dictionary(json_text):
 
     return json.loads(json_text.decode("utf-8"))
 
-
 def insert_message_into_mysql(message):
     """ მესიჯის ჩაწერა მონაცემთა ბაზაში """
 
+    # mysql ბაზასთან კავშირის დამყარების ცდა
+    mysql_connection = connect_to_mysql()
+    
     # წავიკითხოთ შეტყობინების id
     message_id = message["message_id"]
+
+    # თუ ვერ დაუკავშირდა mysql-ს
+    if not mysql_connection:
+        print("ვერ დაუკავშირდა mysql ბაზას და არ ჩაიწერა შემდეგი მესიჯი ბაზაში:" + message_id)
+        return
+
 
     # წავიკითხოთ შეტყობინების დრო
     sent_message_datetime = message["sent_message_datetime"]
@@ -113,19 +141,11 @@ def insert_message_into_mysql(message):
     VALUES('{}', '{}', '{}', '{}', '{}', '{}')".format(message_id, sent_message_datetime, message_type,
                                                        text, client_ip, client_script_name)
 
-    # mysql ბაზასთან კავშირის დამყარების ცდა
-    for i in range(3):
-        mysql_connection = connect_to_mysql()
-        if not mysql_connection:
-            print("ვერ დაუკავშირდა mysql ბაზას და არ ჩაიწერა შემდეგი მესიჯი ბაზაში:" + message_id)
-            continue
-        else:
-            cursor = mysql_connection.cursor()
-            cursor.execute(insert_statement)
-            mysql_connection.commit()
-            cursor.close()
-            mysql_connection.close()
-            break
+    cursor = mysql_connection.cursor()
+    cursor.execute(insert_statement)
+    mysql_connection.commit()
+    cursor.close()
+    mysql_connection.close()
 
 
 def client_handler_thread(connection, addr):
@@ -151,12 +171,11 @@ def client_handler_thread(connection, addr):
             # მესიჯის ჩაწერა მონაცემთა ბაზაში
             insert_message_into_mysql(message)
 
-            # წასაშლელია if-ის პირობა მარტო
-            if message["message_type"] != "blockkk":
-                # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
-                connection.send(bytes(message["message_id"], "utf-8"))
-                # წასაშლელია
-                print("sending : " + message["message_id"])
+            # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
+            connection.send(bytes(message["message_id"], "utf-8"))
+            # წასაშლელია
+            print("sending : " + message["message_id"])
+
             # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
             connection.close()
 

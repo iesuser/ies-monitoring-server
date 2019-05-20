@@ -39,28 +39,63 @@ mysql_server_user = os.environ.get('mysql_server_user')
 # mysql სერვერის მომხმარებლის პაროლი (მოთავსებულია .bashrc ფაილში)
 mysql_user_pass = os.environ.get('mysql_user_pass')
 
+# log ფაილის დასახელება
+log_filename = "LOG"
+
+
+class ConsoleFormatter(logging.Formatter):
+    """
+    კლასით განვსაზღვრავთ ტერმინალში გამოტანილი მესიჯის ფორმატს.
+
+    """
+    date_format = "%H:%M:%S"
+    default_format = "%(asctime)s [%(levelname)s] %(msg)s"
+    info_format = "%(msg)s"
+
+    def __init__(self):
+        super().__init__(fmt=ConsoleFormatter.default_format, datefmt=ConsoleFormatter.date_format, style='%')
+
+    def format(self, record):
+        # დავიმახსოვროთ თავდაპირველი ფორმატი
+        format_orig = self._style._fmt
+
+        if record.levelno == logging.INFO:
+            self._style._fmt = ConsoleFormatter.info_format
+
+        # შევცვალოთ თავდაპირველი ფორმატი
+        result = logging.Formatter.format(self, record)
+
+        # დავაბრუნოთ თავდაპირველი ფორმატი
+        self._style._fmt = format_orig
+
+        return result
+
 # logger შექმნა
 logger = logging.getLogger('ies_monitoring_server_logger')
 logger.setLevel(logging.DEBUG)
 
-# შევქმნათ console handler - ი და განვსაზღვროთ დონე
-console_handler = logging.StreamHandler()
+# შევქმნათ console handler - ი და განვსაზღვროთ დონე და ფორმატი
+console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
+console_formatter = ConsoleFormatter()
+console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
-console_handler_formatter = logging.Formatter('%(levelname)s - %(message)s')
-console_handler.setFormatter(console_handler_formatter)
 
-# FileHandler - ის შექმნა. დონის და ფორმატის განსაზღვრა 
-log_file_handler = logging.FileHandler('LOG')
+# FileHandler - ის შექმნა. დონის და ფორმატის განსაზღვრა
+log_file_handler = logging.FileHandler(log_filename)
 log_file_handler.setLevel(logging.DEBUG)
-log_file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 log_file_handler.setFormatter(log_file_formatter)
 logger.addHandler(log_file_handler)
 
 
-def connection_close(connection):
+def connection_close(connection, addr=None):
     """ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს"""
-
+    # print(dir(connection))
+    if addr is None:
+        logger.debug("სოკეტის დახურვა " + str(connection.getsockname()))
+    else:
+        logger.debug("კლიენტთან კავშირის დახურვა " + str(addr))
     connection.shutdown(socket.SHUT_RDWR)
     connection.close()
 
@@ -77,12 +112,14 @@ def start_listening():
     # ვუთითებთ მაქსიმალურ კლიენტების რაოდენობას ვინც ელოდება კავშირის დამყარებაზე თანხმობას
     socket_object.listen(10)
 
+    logger.debug("სოკეტის ინიციალიზაცია")
+
 
 def accept_connections():
     """ ფუნქცია ელოდება client-ებს და ამყარებს კავშირს. 
     კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას """
 
-    logger.debug('Ready for accept connections...')
+    logger.info("პროგრამა მზად არის შეტყობინების მისაღებად...")
 
     while True:
         try:
@@ -106,20 +143,20 @@ def bytes_to_dictionary(json_text):
 
     return json.loads(json_text.decode("utf-8"))
 
+
 def insert_message_into_mysql(message):
     """ მესიჯის ჩაწერა მონაცემთა ბაზაში """
 
     # mysql ბაზასთან კავშირის დამყარების ცდა
     mysql_connection = connect_to_mysql()
-    
+
     # წავიკითხოთ შეტყობინების id
     message_id = message["message_id"]
 
     # თუ ვერ დაუკავშირდა mysql-ს
     if not mysql_connection:
-        print("ვერ დაუკავშირდა mysql ბაზას და არ ჩაიწერა შემდეგი მესიჯი ბაზაში:" + message_id)
+        logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message))
         return
-
 
     # წავიკითხოთ შეტყობინების დრო
     sent_message_datetime = message["sent_message_datetime"]
@@ -142,8 +179,11 @@ def insert_message_into_mysql(message):
                                                        text, client_ip, client_script_name)
 
     cursor = mysql_connection.cursor()
-    cursor.execute(insert_statement)
-    mysql_connection.commit()
+    try:
+        cursor.execute(insert_statement)
+        mysql_connection.commit()
+    except Exception as ex:
+        logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message) + "\n" + str(ex))
     cursor.close()
     mysql_connection.close()
 
@@ -152,7 +192,7 @@ def client_handler_thread(connection, addr):
     """ client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს მის შეტყობინებას """
 
     # გამოაქვს დაკავშირებული კლიენტის მისამართი
-    print('Got connection from', addr)
+    logger.debug("კავშირი დამყარდა " + str(addr) + " - თან")
 
     while True:
         # ციკლის შეჩერება 0.5 წამით
@@ -168,18 +208,17 @@ def client_handler_thread(connection, addr):
             # წაკითხული შეტყობინება bytes ობიექტიდან გადავიყვანოთ dictionary ობიექტში
             message = bytes_to_dictionary(json_message)
 
+            logger.debug(str(addr) + " - დან მიღებული შეტყობინება: " + str(message))
             # მესიჯის ჩაწერა მონაცემთა ბაზაში
             insert_message_into_mysql(message)
 
             # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
             connection.send(bytes(message["message_id"], "utf-8"))
             # წასაშლელია
-            print("sending : " + message["message_id"])
+            logger.debug(str(addr) + " - თვის პასუხის დაბრუნება: " + message["message_id"])
 
             # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
-            connection.close()
-
-            print("Closed client connection", addr)
+            connection_close(connection, addr)
 
             # გამოვიდეთ ციკლიდან რაც გულისხმობს client_handler_thread დასრულებას და შესაბამისი Thread-ის დახურვას
             break
@@ -197,9 +236,8 @@ def command_listener():
         # თუ მომხმარებლის მიერ შეყვანილი ბრძანება არის `exit` დავხუროთ პროგრამა და socket_object ობიექტი
         if command == "exit":
             must_close = True
-            print("Bye...")
             connection_close(socket_object)
-            # time.sleep(3)
+            logger.info("Bye...")
             break
 
 
@@ -212,16 +250,15 @@ def connect_to_mysql():
                                            mysql_user_pass,
                                            mysql_database_name,
                                            port=mysql_server_port)
-        print("Connection to mysql database established")
+        logger.debug("მონაცემთა ბაზასთან კავშირი დამყარებულია")
     except Exception as ex:
-        print(ex)
+        logger.error("მონაცემთა ბაზასთან კავშირი წარუმატებელია\n" + str(ex))
         return False
     return mysql_connection
 
 
 def main():
     """ მთავარი ფუნქცია რომელიც ეშვება პირველი პროგრამის ჩართვის დროს """
-
     # mysql - თან დაკავშირება
     # global mysql_connection
     # mysql_connection = connect_to_mysql()

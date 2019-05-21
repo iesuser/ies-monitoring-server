@@ -11,10 +11,11 @@ import logging
 
 
 # სერვერის ip მისამართი
-server_ip = "10.0.0.16"
+server_ip = "10.0.0.20"
 
-# სერვეროს პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
+# სერვერის პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
 port = 12345
+
 # socket - ებიექტის შექმნა
 socket_object = socket.socket()
 
@@ -70,13 +71,28 @@ class ConsoleFormatter(logging.Formatter):
 
         return result
 
+
+def get_script_argument():
+    """სკრიპტისთვის მიწოდებული არგუმენტის დაჭერა"""
+
+    try:
+        log_level = sys.argv[1]
+        return(log_level)
+    except Exception as ex:
+        log_level = ""
+        return(log_level)
+
+
 # logger შექმნა
 logger = logging.getLogger('ies_monitoring_server_logger')
 logger.setLevel(logging.DEBUG)
 
 # შევქმნათ console handler - ი და განვსაზღვროთ დონე და ფორმატი
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.DEBUG)
+if get_script_argument() == "--debug":
+    console_handler.setLevel(logging.DEBUG)
+else:
+    console_handler.setLevel(logging.INFO)
 console_formatter = ConsoleFormatter()
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
@@ -84,13 +100,14 @@ logger.addHandler(console_handler)
 # FileHandler - ის შექმნა. დონის და ფორმატის განსაზღვრა
 log_file_handler = logging.FileHandler(log_filename)
 log_file_handler.setLevel(logging.DEBUG)
-log_file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+log_file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s \n")
 log_file_handler.setFormatter(log_file_formatter)
 logger.addHandler(log_file_handler)
 
 
 def connection_close(connection, addr=None):
     """ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს"""
+
     # print(dir(connection))
     if addr is None:
         logger.debug("სოკეტის დახურვა " + str(connection.getsockname()))
@@ -116,7 +133,7 @@ def start_listening():
 
 
 def accept_connections():
-    """ ფუნქცია ელოდება client-ებს და ამყარებს კავშირს. 
+    """ ფუნქცია ელოდება client-ებს და ამყარებს კავშირს.
     კავშირის დათანხმების შემდეგ იძახებს connection_hendler - ფუნქციას """
 
     logger.info("პროგრამა მზად არის შეტყობინების მისაღებად...")
@@ -182,6 +199,7 @@ def insert_message_into_mysql(message):
     try:
         cursor.execute(insert_statement)
         mysql_connection.commit()
+        logger.debug("შეტყობინება ჩაიწერა ბაზაში. შეტყობინების ID: " + message["message_id"])
     except Exception as ex:
         logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message) + "\n" + str(ex))
     cursor.close()
@@ -237,7 +255,7 @@ def command_listener():
         if command == "exit":
             must_close = True
             connection_close(socket_object)
-            logger.info("Bye...")
+            logger.info("პროგრამის გათიშვა")
             break
 
 
@@ -276,6 +294,7 @@ def main():
 
     # დავიწყოთ მომხმარებლის ბრძანებების მოსმენა
     threading.Thread(target=command_listener).start()
+
 
 if __name__ == "__main__":
     main()

@@ -8,6 +8,7 @@ import time
 import pymysql
 import os
 import logging
+import argparse
 
 
 # სერვერის ip მისამართი
@@ -34,10 +35,10 @@ mysql_server_port = 3306
 # mysql სერვერის მონაცემთა ბაზის სახელი
 mysql_database_name = "ies_monitoring_server"
 
-# mysql სერვერის მომხარებელი (მოთავსებულია .bashrc ფაილში)
+# mysql სერვერის მომხარებელი (მოთავსებულია .bashrc ფაილში: export mysql_server_user="")
 mysql_server_user = os.environ.get('mysql_server_user')
 
-# mysql სერვერის მომხმარებლის პაროლი (მოთავსებულია .bashrc ფაილში)
+# mysql სერვერის მომხმარებლის პაროლი (მოთავსებულია .bashrc ფაილში: export mysql_user_pass="")
 mysql_user_pass = os.environ.get('mysql_user_pass')
 
 # log ფაილის დასახელება
@@ -72,27 +73,24 @@ class ConsoleFormatter(logging.Formatter):
         return result
 
 
-def get_script_argument():
-    """სკრიპტისთვის მიწოდებული არგუმენტის დაჭერა"""
+# parser - ის შექმნა
+parser = argparse.ArgumentParser(description="არგუმენტის პარსერი ლოგგერის დონის დასაყენებლად")
+parser.add_argument('-d', '--debug', action='store_true', help='ლოგგერის დონის შეცვლა debug ზე')
+args = parser.parse_args()
 
-    try:
-        log_level = sys.argv[1]
-        return(log_level)
-    except Exception as ex:
-        log_level = ""
-        return(log_level)
-
-
-# logger შექმნა
+# logger - ის შექმნა
 logger = logging.getLogger('ies_monitoring_server_logger')
 logger.setLevel(logging.DEBUG)
 
 # შევქმნათ console handler - ი და განვსაზღვროთ დონე და ფორმატი
 console_handler = logging.StreamHandler(sys.stdout)
-if get_script_argument() == "--debug":
+
+# არგუმენტიდან გამომდინარე დავაყენოთ ტერმინალში ლოგგერის დონე
+if args.debug:
     console_handler.setLevel(logging.DEBUG)
 else:
     console_handler.setLevel(logging.INFO)
+
 console_formatter = ConsoleFormatter()
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
@@ -100,7 +98,7 @@ logger.addHandler(console_handler)
 # FileHandler - ის შექმნა. დონის და ფორმატის განსაზღვრა
 log_file_handler = logging.FileHandler(log_filename)
 log_file_handler.setLevel(logging.DEBUG)
-log_file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s \n")
+log_file_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 log_file_handler.setFormatter(log_file_formatter)
 logger.addHandler(log_file_handler)
 
@@ -146,7 +144,8 @@ def accept_connections():
             # თითოეულ დაკავშირებულ client-ისთვის შევქმნათ და გავუშვათ
             # ცალკე thread-ი client_handler_thread ფუნქციის საშუალებით
             threading.Thread(target=client_handler_thread, args=(connection, addr)).start()
-        except Exception as err:
+        except Exception as ex:
+            logger.error("კლიენტი ვერ გვიკავშირდება\n" + str(ex))
             pass
 
         # შევამოწმოთ თუ must_close არის True
@@ -230,10 +229,12 @@ def client_handler_thread(connection, addr):
             # მესიჯის ჩაწერა მონაცემთა ბაზაში
             insert_message_into_mysql(message)
 
-            # clien-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
-            connection.send(bytes(message["message_id"], "utf-8"))
-            # წასაშლელია
-            logger.debug(str(addr) + " - თვის პასუხის დაბრუნება: " + message["message_id"])
+            # client-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
+            try:
+                connection.send(bytes(message["message_id"], "utf-8"))
+                logger.debug(str(addr) + " - თვის პასუხის დაბრუნება: " + message["message_id"])
+            except Exception as ex:
+                logger.error(str(addr) + " - ს ვერ ვუგზავნით შეტყობინებას უკან: " + message["message_id"] + "\n" + str(ex))
 
             # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
             connection_close(connection, addr)
@@ -256,7 +257,7 @@ def command_listener():
             must_close = True
             connection_close(socket_object)
             logger.info("პროგრამის გათიშვა")
-            break
+            sys.exit()
 
 
 def connect_to_mysql():

@@ -12,7 +12,7 @@ import argparse
 
 
 # სერვერის ip მისამართი
-server_ip = "10.0.0.20"
+server_ip = "10.0.0.132"
 
 # სერვერის პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
 port = 12345
@@ -42,7 +42,7 @@ mysql_server_user = os.environ.get('mysql_server_user')
 mysql_user_pass = os.environ.get('mysql_user_pass')
 
 # log ფაილის დასახელება
-log_filename = "LOG"
+log_filename = "log"
 
 
 class ConsoleFormatter(logging.Formatter):
@@ -74,7 +74,7 @@ class ConsoleFormatter(logging.Formatter):
 
 
 # parser - ის შექმნა
-parser = argparse.ArgumentParser(description="არგუმენტის პარსერი ლოგგერის დონის დასაყენებლად")
+parser = argparse.ArgumentParser(description="?!! ...დასაწერია პროგრამის განმარტება")
 parser.add_argument('-d', '--debug', action='store_true', help='ლოგგერის დონის შეცვლა debug ზე')
 args = parser.parse_args()
 
@@ -145,7 +145,7 @@ def accept_connections():
             # ცალკე thread-ი client_handler_thread ფუნქციის საშუალებით
             threading.Thread(target=client_handler_thread, args=(connection, addr)).start()
         except Exception as ex:
-            logger.error("კლიენტი ვერ გვიკავშირდება\n" + str(ex))
+            # logger.error("კლიენტი ვერ გვიკავშირდება\n" + str(ex))
             pass
 
         # შევამოწმოთ თუ must_close არის True
@@ -166,43 +166,55 @@ def insert_message_into_mysql(message):
     # mysql ბაზასთან კავშირის დამყარების ცდა
     mysql_connection = connect_to_mysql()
 
+    cursor = mysql_connection.cursor()
+
     # წავიკითხოთ შეტყობინების id
     message_id = message["message_id"]
 
-    # თუ ვერ დაუკავშირდა mysql-ს
-    if not mysql_connection:
-        logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message))
-        return
+    # დავთვალოთ მონაცემთა ბაზაში დუპლიკატი შეტყობინებების რაოდენობა
+    count = "SELECT COUNT(*) as cnt FROM messages WHERE message_id = '{}'".format(message_id)
+    cursor.execute(count)
+    duplicate_message_count = cursor.fetchone()[0]
 
-    # წავიკითხოთ შეტყობინების დრო
-    sent_message_datetime = message["sent_message_datetime"]
+    # ვამოწმებთ მოცემული შეტყობინება მეორდება თუ არა მონაცემთა ბაზაში
+    if duplicate_message_count == 0:
+        # თუ ვერ დაუკავშირდა mysql-ს
+        if not mysql_connection:
+            logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message))
+            return
 
-    # წავიკითხოთ შეტყობინების ტიპი
-    message_type = message["message_type"]
+        # წავიკითხოთ შეტყობინების დრო
+        sent_message_datetime = message["sent_message_datetime"]
 
-    # წავიკითხოთ შეტყობინების ტექსტი
-    text = message["text"]
+        # წავიკითხოთ შეტყობინების ტიპი
+        message_type = message["message_type"]
 
-    # წავიკითხოთ Client-ის ip მისამართი საიდანაც მოვიდა შეტყობინება
-    client_ip = message["client_ip"]
+        # წავიკითხოთ შეტყობინების ტექსტი
+        text = message["text"]
 
-    # წავიკითხოთ client-ის სკრიპტის სახელი საიდანაც მოვიდა შეტყობინება
-    client_script_name = message["client_script_name"]
+        # წავიკითხოთ Client-ის ip მისამართი საიდანაც მოვიდა შეტყობინება
+        client_ip = message["client_ip"]
 
-    insert_statement = "INSERT INTO `messages` \
-    (`message_id`, `sent_message_datetime`, `message_type`, `text`, `client_ip`, `client_script_name`) \
-    VALUES('{}', '{}', '{}', '{}', '{}', '{}')".format(message_id, sent_message_datetime, message_type,
-                                                       text, client_ip, client_script_name)
+        # წავიკითხოთ client-ის სკრიპტის სახელი საიდანაც მოვიდა შეტყობინება
+        client_script_name = message["client_script_name"]
 
-    cursor = mysql_connection.cursor()
-    try:
-        cursor.execute(insert_statement)
-        mysql_connection.commit()
-        logger.debug("შეტყობინება ჩაიწერა ბაზაში. შეტყობინების ID: " + message["message_id"])
-    except Exception as ex:
-        logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message) + "\n" + str(ex))
-    cursor.close()
-    mysql_connection.close()
+        insert_statement = "INSERT INTO `messages` \
+        (`message_id`, `sent_message_datetime`, `message_type`, `text`, `client_ip`, `client_script_name`) \
+        VALUES('{}', '{}', '{}', '{}', '{}', '{}')".format(message_id, sent_message_datetime, message_type,
+                                                           text, client_ip, client_script_name)
+
+        try:
+            cursor.execute(insert_statement)
+            mysql_connection.commit()
+            logger.debug("შეტყობინება ჩაიწერა ბაზაში. შეტყობინების ID: " + message["message_id"])
+        except Exception as ex:
+            logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message) + "\n" + str(ex))
+        cursor.close()
+        mysql_connection.close()
+    # დუპლიკატ შეტყობინებას არ ვწერთ მონაცემთა ბაზაში
+    else:
+        logger.warning("მონაცემთა ბაზაში შეტყობინება {" + message_id + "} "
+                       "უკვე არსებობს და აღარ მოხდა მისი ხელმეორედ ჩაწერა")
 
 
 def client_handler_thread(connection, addr):
@@ -257,7 +269,7 @@ def command_listener():
             must_close = True
             connection_close(socket_object)
             logger.info("პროგრამის გათიშვა")
-            sys.exit()
+            break
 
 
 def connect_to_mysql():

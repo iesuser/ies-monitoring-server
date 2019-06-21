@@ -12,7 +12,7 @@ import argparse
 
 
 # სერვერის ip მისამართი
-server_ip = "10.0.0.132"
+server_ip = "10.0.0.124"
 
 # სერვერის პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
 port = 12345
@@ -43,6 +43,9 @@ mysql_user_pass = os.environ.get('mysql_user_pass')
 
 # log ფაილის დასახელება
 log_filename = "log"
+
+# ies_monitor აპლიკაციის ip
+ies_monitor_ip_dict = {}
 
 
 class ConsoleFormatter(logging.Formatter):
@@ -104,7 +107,7 @@ logger.addHandler(log_file_handler)
 
 
 def connection_close(connection, addr=None):
-    """ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს"""
+    """ ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს """
 
     # print(dir(connection))
     if addr is None:
@@ -189,6 +192,9 @@ def insert_message_into_mysql(message):
         # წავიკითხოთ შეტყობინების ტიპი
         message_type = message["message_type"]
 
+        # წავიკითხოთ შეტყობინების სათაური
+        message_title = message["message_title"]
+
         # წავიკითხოთ შეტყობინების ტექსტი
         text = message["text"]
 
@@ -199,9 +205,9 @@ def insert_message_into_mysql(message):
         client_script_name = message["client_script_name"]
 
         insert_statement = "INSERT INTO `messages` \
-        (`message_id`, `sent_message_datetime`, `message_type`, `text`, `client_ip`, `client_script_name`) \
-        VALUES('{}', '{}', '{}', '{}', '{}', '{}')".format(message_id, sent_message_datetime, message_type,
-                                                           text, client_ip, client_script_name)
+        (`message_id`, `sent_message_datetime`, `message_type`, `message_title`, `text`, `client_ip`, `client_script_name`) \
+        VALUES('{}', '{}', '{}', '{}', '{}', '{}', '{}')".format(message_id, sent_message_datetime, message_type,
+                                                                 message_title, text, client_ip, client_script_name)
 
         try:
             cursor.execute(insert_statement)
@@ -236,10 +242,28 @@ def client_handler_thread(connection, addr):
         else:
             # წაკითხული შეტყობინება bytes ობიექტიდან გადავიყვანოთ dictionary ობიექტში
             message = bytes_to_dictionary(json_message)
-
+        for name in message:
+            if "ies_monitor" in message:
+                ies_monitor_ip_dict.update(message)
+                logger.debug("ies_monitor - " + str(addr) + " - დან მიღებული შეტყობინება: " + str(message))
+        if "ies_monitor" in message:
+            pass
+        else:
             logger.debug(str(addr) + " - დან მიღებული შეტყობინება: " + str(message))
-            # მესიჯის ჩაწერა მონაცემთა ბაზაში
-            insert_message_into_mysql(message)
+            try:
+                # მესიჯის ჩაწერა მონაცემთა ბაზაში
+                insert_message_into_mysql(message)
+                # connection.send(bytes(message, "utf-8"))
+                ies_monitor_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                for key in ies_monitor_ip_dict:
+                    ies_monitor_ip = ies_monitor_ip_dict.get(key)[0]
+                    ies_monitor_port = ies_monitor_ip_dict.get(key)[1]
+                    ies_monitor_connection.connect((ies_monitor_ip, ies_monitor_port))
+                    ies_monitor_connection.send(bytes("test2", "utf-8"))
+                    ies_monitor_connection.close()
+                    print("შეტყობინება გაეგზავნა ies_monitor -ს")
+            except Exception as ex:
+                print(str(ex))
 
             # client-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
             try:
@@ -248,11 +272,11 @@ def client_handler_thread(connection, addr):
             except Exception as ex:
                 logger.error(str(addr) + " - ს ვერ ვუგზავნით შეტყობინებას უკან: " + message["message_id"] + "\n" + str(ex))
 
-            # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
-            connection_close(connection, addr)
+        # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
+        connection_close(connection, addr)
 
-            # გამოვიდეთ ციკლიდან რაც გულისხმობს client_handler_thread დასრულებას და შესაბამისი Thread-ის დახურვას
-            break
+        # გამოვიდეთ ციკლიდან რაც გულისხმობს client_handler_thread დასრულებას და შესაბამისი Thread-ის დახურვას
+        break
 
 
 def command_listener():

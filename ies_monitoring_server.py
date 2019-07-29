@@ -1,19 +1,24 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
+
+# 1. response_ies_monitor_messages ფუნქციაში database_pull_request პაკეტის მოსვლის შემთხვევაში თუ ies_monitoring_server
+#    ვერ დაუკავშირდა mysql-ს უკან პასუხი გავუგზავნოთ თუ არა ies_monitor-ს
+
 import sys
 import socket
 import threading
-import json
+import pickle
 import time
 import pymysql
 import os
 import logging
 import argparse
 import select
+import datetime
 
 
 # სერვერის ip მისამართი
-server_ip = "10.0.0.113"
+server_ip = "10.0.0.177"
 
 # სერვერის პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
 port = 12345
@@ -45,9 +50,21 @@ mysql_user_pass = os.environ.get('mysql_user_pass')
 # log ფაილის დასახელება
 log_filename = "log"
 
+# დაყოვნება პროგრამის ისეთ ციკლებში სადაც საჭიროა/რეკომენდირებულია შენელებული მუშაობა
+delay = 0.1
+
+# ლოდინის დრო, თუ რამდენხანს დაველოდებით შეტყობინების მიღებას კავშირის დამყარების შემდეგ
+waiting_message_timeout = 60
+
+# ლოდინის დრო, თუ რამდენხანს დაველოდებით შეტყობინების შემდეგი ნაწილის (ბაიტების) მიღებას
+next_message_bytes_timeout = 30
+
 
 # -------------------------------------------------------------------------------------------------
 
+
+# მესიჯის ჰედერის სიგრძე
+HEADERSIZE = 10
 
 # ies_monitor აპლიკაციის ip-ები და პორტი
 ies_monitor_ips_and_port = {}
@@ -113,7 +130,7 @@ logger.addHandler(log_file_handler)
 
 def connection_close(connection, addr=None):
     """ ხურავს (კავშირს სერვერთან) პარამეტრად გადაცემულ connection socket ობიექტს """
-    
+
     if addr is None:
         logger.debug("სოკეტის დახურვა " + str(connection.getsockname()))
     else:
@@ -153,7 +170,7 @@ def accept_connections():
 
             # თითოეულ დაკავშირებულ client-ისთვის შევქმნათ და გავუშვათ
             # ცალკე thread-ი client_handler_thread ფუნქციის საშუალებით
-            threading.Thread(target=client_handler_thread, args=(connection, addr)).start()        
+            threading.Thread(target=client_handler_thread, args=(connection, addr)).start()
         except socket.error:
             break
         except Exception as ex:
@@ -161,19 +178,20 @@ def accept_connections():
             break
 
 
-def dictionary_to_bytes(dictionary_message):
-    """
-        dictionary ტიპის ობიექტი გადაყავს bytes ტიპში
-        რადგან socket ობიექტის გამოყენებით მონაცემები იგზავნება bytes ტიპში
-        მოსახერხებელია რომ გვქონდეს ფუნქციები რომელიც dictionary-ის გადაიყვანს
-        bytes ტიპში და პირიქით
-    """
-    return bytes(json.dumps(dictionary_message), 'utf-8')
+def dictionary_message_to_bytes(message):
+    """ ფუნქციას dictionary ტიპის მესიჯი გადაყავს bytes ტიპში და თავში უმატებს header-ს """
 
-def bytes_to_dictionary(json_text):
-    """ json ტექსტს აკონვერტირებს dictionary ტიპში """
+    # dictionary გადადის bytes ტიპში (serialization)
+    message_bytes = pickle.dumps(message)
 
-    return json.loads(json_text.decode("utf-8"))
+    # მესიჯის სიგრძე დათვლა
+    message_length = len(message_bytes)
+
+    # header-ი გადავიყვანოთ ბაიტებში და დავუმატოთ გადაყვანილი მესიჯი byte-ებში
+    message_bytes = bytes(str(message_length).ljust(HEADERSIZE), 'utf-8') + message_bytes
+
+    # ფუნქცია აბრუნებს მესიჯს გადაყვანილს ბაიტებში თავისი header-ით
+    return message_bytes
 
 
 def insert_message_into_mysql(message):
@@ -182,6 +200,14 @@ def insert_message_into_mysql(message):
     # mysql ბაზასთან კავშირის დამყარების ცდა
     mysql_connection = connect_to_mysql()
 
+    # შევამოწმოთ კავშირი mysql ბაზასთან
+    if mysql_connection is False:
+        # logger -ის გამოძახება
+        logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message))
+        # ფუნქციიდან გამოსვლა
+        return
+
+    # mysql კურსორის შექმნა
     cursor = mysql_connection.cursor()
 
     # წავიკითხოთ შეტყობინების id
@@ -194,10 +220,6 @@ def insert_message_into_mysql(message):
 
     # ვამოწმებთ მოცემული შეტყობინება მეორდება თუ არა მონაცემთა ბაზაში
     if duplicate_message_count == 0:
-        # თუ ვერ დაუკავშირდა mysql-ს
-        if not mysql_connection:
-            logger.error("არ ჩაიწერა შემდეგი მესიჯი ბაზაში: " + str(message))
-            return
 
         # წავიკითხოთ შეტყობინების დრო
         sent_message_datetime = message["sent_message_datetime"]
@@ -238,10 +260,11 @@ def insert_message_into_mysql(message):
         logger.warning("მონაცემთა ბაზაში შეტყობინება {" + message_id + "} "
                        "უკვე არსებობს და აღარ მოხდა მისი ხელმეორედ ჩაწერა")
 
+
 def connect_ies_monitor(ies_monitor_ip, ies_monitor_port):
     """ ფუნქცია უკავშირდება ies_monitoring_server-ს """
 
-     # connection სოკეტის შექმნა
+    # connection სოკეტის შექმნა
     ies_monitor_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     try:
@@ -254,31 +277,38 @@ def connect_ies_monitor(ies_monitor_ip, ies_monitor_port):
     return ies_monitor_connection
 
 
-def send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, message, write_to_log=True):
-    """
-        ფუნქციიის საშუალებით შეიძლება შეტყობინების გაგზავნა ies_monitor-თან.
-        write_to_log პარამეტრი გამოიყენება იმ შემთხვევაში როდესაც მესიჯის იგზავნება ძალიან ხშირად
-        და არ გვინდა ლოგ ფაილში ჩაიწეროს ბევრჯერ
-    """
+def send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, message, verbose=True):
+    """ ფუნქციიის საშუალებით შეიძლება შეტყობინების გაგზავნა ies_monitor-თან """
 
     # სოკეტის შექმნა
     ies_monitor_connection = connect_ies_monitor(ies_monitor_ip, ies_monitor_port)
 
     # ies_monitor-თან დაკავშირება
     if ies_monitor_connection is False:
-        logger.warning("შეტყობინება ვერ გაიგზავნა, ies_monitor-თან კავშირი ვერ დამყარდა ({},{})\n{}"
-                       .format(ies_monitor_ip, ies_monitor_port, message))
+        if verbose is True:
+            logger.warning("შეტყობინება ვერ გაიგზავნა, ies_monitor-თან კავშირი ვერ დამყარდა ({},{})\n{}"
+                           .format(ies_monitor_ip, ies_monitor_port, message))
+        else:
+            logger.warning("შეტყობინება ვერ გაიგზავნა, ies_monitor-თან კავშირი ვერ დამყარდა ({},{})"
+                           .format(ies_monitor_ip, ies_monitor_port))
         return
 
     try:
         # შეტყობინების გაგზავნა
-        ies_monitor_connection.send(dictionary_to_bytes(message))
-        if write_to_log:
-            logger.info("შეტყობინება გაიგზავნა ies_monitor-თან({},{})\n{}"
-                        .format(ies_monitor_ip, ies_monitor_port, message))
+        ies_monitor_connection.sendall(dictionary_message_to_bytes(message))
+        if verbose is True:
+            logger.debug("შეტყობინება გაიგზავნა ies_monitor-თან({},{})\n{}"
+                         .format(ies_monitor_ip, ies_monitor_port, message))
+        else:
+            logger.debug("შეტყობინება გაიგზავნა ies_monitor-თან({},{})"
+                         .format(ies_monitor_ip, ies_monitor_port))
     except Exception as ex:
-        logger.warning("შეტყობინება ვერ გაიგზავნა ies_monitor-თან({},{})\n{}\n{}"
-                       .format(ies_monitor_ip, ies_monitor_port, message, str(ex)))
+        if verbose is True:
+            logger.warning("შეტყობინება ვერ გაიგზავნა ies_monitor-თან({},{})\n{}\n{}"
+                           .format(ies_monitor_ip, ies_monitor_port, message, str(ex)))
+        else:
+            logger.warning("შეტყობინება ვერ გაიგზავნა ies_monitor-თან({},{})\n{}"
+                           .format(ies_monitor_ip, ies_monitor_port, str(ex)))
 
     # სოკეტის დახურვა
     connection_close(ies_monitor_connection, ies_monitor_connection.getsockname())
@@ -294,6 +324,7 @@ def notify_ies_monitors_to_update_database():
             "who_am_i": "ies_monitoring_server",
             "message_category": "database_updated"
         }
+
         # ies_monitor-თან იგზავბება შეტყოვინება ბაზის განახლების შესახებ
         send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, message)
 
@@ -322,14 +353,14 @@ def response_ies_monitor_messages(message, addr):
 
             logger.debug("ies_monitor.py - " + str(addr) + " - დან მოვიდა რეგისტრაციის შეტყობინება: \n" + str(message))
 
-
         else:
-            logger.debug("ies_monitor.py - " + str(addr) + " - დან მოვიდა რეგისტრაციის შეტყობინება, \
-                          მაგრამ მოთხოვნილი ip უკვე რეგისტრირებულია: \n" + str(message))
+            logger.debug("ies_monitor.py - " + str(addr) + " - დან მოვიდა რეგისტრაციის შეტყობინება, "
+                         "მაგრამ მოთხოვნილი ip უკვე რეგისტრირებულია: \n" + str(message))
         response_message = {
             "who_am_i": "ies_monitoring_server",
             "message_category": "registration_verified"
         }
+
         # იგზავნება შეყობინება ies_monitor-თან რეგისტრაციის წარმატებით გავლის შესახებ
         send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, response_message)
 
@@ -344,7 +375,50 @@ def response_ies_monitor_messages(message, addr):
             "who_am_i": "ies_monitoring_server",
             "message_category": "hello"
         }
+
         send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, response_message)
+
+    elif message["message_category"] == "database_pull_request":
+
+        # mysql ბაზასთან კავშირის დამყარების ცდა
+        mysql_connection = connect_to_mysql(verbose=False)
+
+        # შევამოწმოთ კავშირი mysql ბაზასთან
+        if mysql_connection is False:
+            # logger -ის გამოძახება
+            logger.warning("მონაცემთა ბაზასთან კავშირი წარუმატებელია და ვერ გაიგზავნა პასუხი ies_monitor-თან შემდეგი მოთხოვნისთვის:\n" + str(message))
+            # ფუნქციიდან გამოსვლა
+            return
+
+        # ip წაკითხვა მესიჯიდან
+        ies_monitor_ip = message["ip"]
+
+        # port-ის წაკითხვა მესიჯიდან
+        ies_monitor_port = message["port"]
+
+        # ბოლო შეტყობინების id
+        last_message_id = message["last_message_id"]
+
+        # mysql კურსორის შექმნა
+        cursor = mysql_connection.cursor(pymysql.cursors.DictCursor)
+
+        # დავთვალოთ მონაცემთა ბაზაში დუპლიკატი შეტყობინებების რაოდენობა
+        query = "SELECT * FROM messages WHERE id > {} LIMIT 8".format(last_message_id)
+        cursor.execute(query)
+        message_data = cursor.fetchall()
+        mysql_connection.commit()
+        for message_row in message_data:
+            message_row["sent_message_datetime"] = message_row["sent_message_datetime"].strftime("%Y-%d-%m %H:%M:%S")
+
+        response_message = {
+            "who_am_i": "ies_monitoring_server",
+            "message_category": "message_data",
+            "message_json_data": message_data
+        }
+
+        send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, response_message, False)
+    else:
+        logger.warning("ies_monitor -დან მოვიდა უცნობი კატეგორიის შეტყობინება: \n{}".format(message))
 
 
 def response_ies_monitoring_client_messages(connection, addr, message):
@@ -370,14 +444,21 @@ def response_ies_monitoring_client_messages(connection, addr, message):
 def client_handler_thread(connection, addr):
     """ client-თან კავშირის დამყარების შემდეგ ფუნქცია კითხულობს მის შეტყობინებას """
 
-    while True:
-        # შევამოწმოთ დავხუროთ თუ არა თრედი
-        if application_is_closing:
-            # ციკლიდან გამოსვლა. ამ შემთხვევაში თრედის დახურვა
-            break
+    receiving_message_time_duration = datetime.datetime.now()
 
-        # ციკლის შეჩერება 0.5 წამით
-        time.sleep(0.5)  # ??? 0.5 დრო აროს დასაზუსტებელი
+    while application_is_closing is False:
+
+        # ციკლის შეჩერება 0.1 წამით
+        time.sleep(delay)
+
+        if (datetime.datetime.now() - receiving_message_time_duration) > datetime.timedelta(seconds=waiting_message_timeout):
+            #  ლოგია ჩასამატებელი???
+
+            # კავშირის დახურვა
+            connection_close(connection, addr)
+
+            # ფუნქციიდან გამოსვლა
+            return
 
         # select.select ფუნქცია აბრუნებს readers list-ში ისეთ socket-ებს რომელშიც მოსულია წასაკითხი ინფორმაცია
         # ბოლო პარამეტრად მითითებული გვაქვს 0 რადგან ფუნქცია არ დაელოდოს ისეთ სოკეტს რომელზეც შეიძლება წაკითხვა
@@ -386,33 +467,128 @@ def client_handler_thread(connection, addr):
         # შევამოწმოთ readers list-ი თუ არ არის ცარიელი, რაც ამ შემთხვევაში ნიშნავს იმას რომ connection
         # socket-ზე მოსულია წასაკითხი ინფორმაცია
         if readers:
-            # წავიკითხოთ client-სგან გამოგზავნილი შეტყობინება
-            json_message = connection.recv(buffer_size)
+            # ცვლადი სადაც ვინახავთ მესიჯის ჰედერს და თვითონ მესიჯს
+            header_and_message = b''
 
-            # იმ შემთხვევაში თუ კავშირი გაწყდა json_message იქნბა ცარიელი
-            if not json_message.decode("utf-8"):
-                # ციკლიდან გამოსვლა. ამ შემთხვევაში თრედის დახურვა
+            # ახალი მესიჯი
+            new_message = True
+
+            # მესიჯის მოსვლის დრო
+            message_receive_time = datetime.datetime.now()
+
+            # მუდმივი ციკლი მესიჯის წასაკითხათ
+            while application_is_closing is False:
+                # დაყოვნება
+                time.sleep(delay)
+
+                if (datetime.datetime.now() - message_receive_time) > datetime.timedelta(seconds=next_message_bytes_timeout):
+                    # კავშირის დახურვა
+                    connection_close(connection, addr)
+
+                    # logger ის გამოძახება
+                    # logger.warning("{} გამოგზავნილი მესიჯი არ მოვიდა სრულად. გამოგზავნილი მესიჯის ბაიტების რაოდენობა: {}."
+                    #                "მიღებული მესიჯის ბაიტების რაოდენობა: {}."
+                    #                " მიღებული მესიჯის ნაწილი:\n{}"
+                    #                .format(str(addr), message_length, received_message_length, header_and_message.decode("utf-8")))
+
+                    # ფუნქციიდან გამოსვლა
+                    return
+
+                readers, _, _, = select.select([connection], [], [], 0)
+
+                # შევამოწმოთ readers list-ი თუ არ არის ცარიელი, რაც ამ შემთხვევაში ნიშნავს იმას რომ connection
+                # socket-ზე მოსულია წასაკითხი ინფორმაცია
+                if readers:
+                    # ახალი მესიჯი
+                    # new_message = True
+
+                    # წავიკითხოთ გამოგზავნილი მესიჯის ან მესიჯის ნაწილი
+                    message_bytes = connection.recv(buffer_size)
+
+                    # იმ შემთხვევაში თუ კავშირი გაწყდა message_bytes იქნება ცარიელი
+                    if not message_bytes:
+                        # კავშირის დახურვა
+                        connection_close(connection)
+
+                        # ფუნქციიდან გამოსვლა
+                        return
+
+                    # მესიჯის მიღების დრო
+                    message_receive_time = datetime.datetime.now()
+
+                    # თუ მესიჯის წაკითხვა დაიწყო
+                    if new_message is True:
+
+                        # მესიჯის სიგრძის/ჰედერის წაკითხვა.
+                        message_length = int(message_bytes[:HEADERSIZE])
+
+                        # მესიჯის ჰედერის წაკითხვის დასასრული
+                        new_message = False
+
+                    # მესიჯის შეგროვება
+                    header_and_message += message_bytes
+
+                    # დავთვალოთ წაკითხული მესიჯის სიგრძე ჰედერის გარეშე
+                    received_message_length = len(header_and_message) - HEADERSIZE
+                    # print("received_message_length ======", received_message_length)
+                    # შევამოწმოთ თუ წავიკითხეთ მთლიანი მესიჯი
+                    if received_message_length == message_length:
+                        try:
+                            # მესიჯის აღდგენა, bytes-ს ტიპიდან dictionary ობიექტში გადაყვანა
+                            message = pickle.loads(header_and_message[HEADERSIZE:])
+                        except Exception as ex:
+                            # logger -ის გამოძახება
+                            logger.warning("მიღებული მესიჯის bytes-ს ტიპიდან dictionary ობიექტში გადაყვანისას დაფიქსირდა შეცდომა: \n{}".format(str(ex)))
+
+                            # კავშირის დახურვა
+                            connection_close(connection, addr)
+                            # ფუნქციიდან გამოსვლა
+                            return
+
+                        # ციკლიდან გამოსვლა
+                        break
+                    elif received_message_length > message_length:
+                        try:
+                            # მესიჯის აღდგენა, bytes-ს ტიპიდან dictionary ობიექტში გადაყვანა
+                            message = pickle.loads(header_and_message[HEADERSIZE:])
+                        except Exception as ex:
+                            # logger -ის გამოძახება
+                            logger.warning("მოსული მესიჯის სიგრძემ გადააჭარბა ჰედერში მითითებულ მოსალოდნელ სიგრძეს")
+
+                            # logger -ის გამოძახება
+                            logger.warning("მიღებული მესიჯის bytes-ს ტიპიდან dictionary ობიექტში გადაყვანისას დაფიქსირდა შეცდომა: \n{}"
+                                           .format(str(ex)))
+
+                            # კავშირის დახურვა
+                            connection_close(connection, addr)
+                            # ფუნქციიდან გამოსვლა
+                            return
+
+                        # logger -ის გამოძახება
+                        logger.warning("მოსული მესიჯის სიგრძემ გადააჭარბა ჰედერში მითითებულ მოსალოდნელ სიგრძეს. მესიჯი: \n{}".format(message))
+
+                        # კავშირის დახურვა
+                        connection_close(connection, addr)
+                        # ფუნქციიდან გამოსვლა
+                        return
+
+            # შევამოწმოთ თუ message dictionary-ის არ აქვს who_am_i key-ი
+            if "who_am_i" not in message:
+                # თუ არ გვაქვს who_am_i key-ი ესეიგი მოსულია საეჭვო მესიჯი და ვხურავთ თრედს
                 break
-            else:
-                # წაკითხული შეტყობინება bytes ობიექტიდან გადავიყვანოთ dictionary ობიექტში
-                message = bytes_to_dictionary(json_message)
 
-                # შევამოწმოთ თუ message dictionary-ის არ აქვს who_am_i key-ი
-                if "who_am_i" not in message:
-                    # თუ არ გვაქვს who_am_i key-ი ესეიგი მოსულია საეჭვო მესიჯი და ვხურავთ თრედს
-                    break
+            # შევამოწმოთ თუ შეტყობინება მოსულია ies_monitor.py - სგან
+            elif message["who_am_i"] == "ies_monitor":
+                response_ies_monitor_messages(message, addr)
+                break
 
-                # შევამოწმოთ თუ შეტყობინება მოსულია ies_monitor.py - სგან
-                elif message["who_am_i"] == "ies_monitor":
-                    response_ies_monitor_messages(message, addr)
-                    break
+            # შევამოწმოთ თუ შეტყობინება მოსულია ies_monitoring_client.py - სგან
+            elif message["who_am_i"] == "ies_monitoring_client":
+                response_ies_monitoring_client_messages(connection, addr, message)
+                # გამოვიდეთ ციკლიდან რაც გულისხმობს client_handler_thread დასრულებას და შესაბამისი Thread-ის დახურვას
+                break
 
-                # შევამოწმოთ თუ შეტყობინება მოსულია ies_monitoring_client.py - სგან
-                elif message["who_am_i"] == "ies_monitoring_client":
-                    response_ies_monitoring_client_messages(connection, addr, message)
-                    # გამოვიდეთ ციკლიდან რაც გულისხმობს client_handler_thread დასრულებას და შესაბამისი Thread-ის დახურვას
-                    break
-    # წაკითხული შეტყობინების მერე დავხუროთ კავშირი
+    # წაკითხული მესიჯის მერე დავხუროთ კავშირი
     connection_close(connection, addr)
 
 
@@ -434,7 +610,7 @@ def command_listener():
             break
 
 
-def connect_to_mysql():
+def connect_to_mysql(verbose=True):
     """ ფუნქცია უკავშირდება Mysql სერვერს"""
 
     try:
@@ -443,9 +619,13 @@ def connect_to_mysql():
                                            mysql_user_pass,
                                            mysql_database_name,
                                            port=mysql_server_port)
-        logger.debug("მონაცემთა ბაზასთან კავშირი დამყარებულია")
+        if verbose is True:
+            logger.debug("მონაცემთა ბაზასთან კავშირი დამყარებულია")
     except Exception as ex:
-        logger.error("მონაცემთა ბაზასთან კავშირი წარუმატებელია\n" + str(ex))
+        if verbose is True:
+            logger.error("მონაცემთა ბაზასთან კავშირი წარუმატებელია\n" + str(ex))
+        else:
+            logger.error("Exception: ", str(ex))
         return False
     return mysql_connection
 

@@ -18,7 +18,7 @@ import datetime
 
 
 # სერვერის ip მისამართი
-server_ip = "10.0.0.177"
+server_ip = "10.0.0.194"
 
 # სერვერის პორტი, რომელზეც ვუსმენთ client-ების შეტყობინებებს
 port = 12345
@@ -314,19 +314,37 @@ def send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, message, verbo
     connection_close(ies_monitor_connection, ies_monitor_connection.getsockname())
 
 
-def notify_ies_monitors_to_update_database():
+def notify_ies_monitors_to_update_database(message):
     """ ies_monitor.py-ებს ეგზავნება მესიჯი ახალი შეტყობინების ბაზაში დამატების შესახებ """
+
+    # mysql ბაზასთან კავშირის დამყარების ცდა
+    mysql_connection = connect_to_mysql(verbose=False)
+
+    # mysql კურსორის შექმნა
+    cursor = mysql_connection.cursor(pymysql.cursors.DictCursor)
+
+    query = """SELECT * FROM messages WHERE message_id = '{}'""".format(message["message_id"])
+
+    cursor.execute(query)
+
+    message = cursor.fetchall()
+
+    mysql_connection.commit()
 
     for ies_monitor_ip, ies_monitor_port in ies_monitor_ips_and_port.items():
 
         # შეტყობინების შექმნა ბაზის განახლების შესახებ
         message = {
             "who_am_i": "ies_monitoring_server",
-            "message_category": "database_updated"
+            "message_category": "database_updated",
+            "message_data": message
         }
 
-        # ies_monitor-თან იგზავბება შეტყოვინება ბაზის განახლების შესახებ
+        # ies_monitor-თან იგზავბება შეტყობინება ბაზის განახლების შესახებ
         send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, message)
+
+    cursor.close()
+    mysql_connection.close()
 
 
 def response_ies_monitor_messages(message, addr):
@@ -403,7 +421,7 @@ def response_ies_monitor_messages(message, addr):
         cursor = mysql_connection.cursor(pymysql.cursors.DictCursor)
 
         # დავთვალოთ მონაცემთა ბაზაში დუპლიკატი შეტყობინებების რაოდენობა
-        query = "SELECT * FROM messages WHERE id > {} LIMIT 8".format(last_message_id)
+        query = "SELECT * FROM messages WHERE id > {}".format(last_message_id)
         cursor.execute(query)
         message_data = cursor.fetchall()
         mysql_connection.commit()
@@ -413,8 +431,12 @@ def response_ies_monitor_messages(message, addr):
         response_message = {
             "who_am_i": "ies_monitoring_server",
             "message_category": "message_data",
-            "message_json_data": message_data
+            "message_data": message_data
         }
+
+        print("-------------------MESSAGE_DATA-----------------------------\n", message_data)
+        cursor.close()
+        mysql_connection.close()
 
         send_message_to_ies_monitor(ies_monitor_ip, ies_monitor_port, response_message, False)
     else:
@@ -431,7 +453,7 @@ def response_ies_monitoring_client_messages(connection, addr, message):
     logger.debug("ies_monitoring_client.py - " + str(addr) + " - დან მიღებული შეტყობინება: " + str(message))
     # მესიჯის ჩაწერა მონაცემთა ბაზაში
     if insert_message_into_mysql(message):
-        notify_ies_monitors_to_update_database()
+        notify_ies_monitors_to_update_database(message)
 
     # client-ს გავუგზავნოთ მესიჯის id იმის პასუხად რომ შეტყობინება მივიღეთ
     try:
